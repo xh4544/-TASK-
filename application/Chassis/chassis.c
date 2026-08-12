@@ -1,6 +1,7 @@
 #include "chassis.h"
 #include "bsp_motor.h"
 #include "bsp_led.h"
+#include "bsp_can.h"
 #include "can_send.h"
 #include "can_receive.h"
 #include "protocol.h"
@@ -9,21 +10,23 @@
 #include "filter.h"
 #include <stdlib.h>
 
-/* ------------------------- 参数（需按实际调参） ------------------------- */
 #define MOTOR_MAX_RPM       300     /* 目标转速上限 rpm */
 #define PID_MAX_OUTPUT      1000    /* PID 输出上限，对应 duty -1000~1000 */
 #define PID_INTEGRAL_LIMIT  500     /* 积分限幅 */
-#define SPEED_PID_KP        3.0f    /* 速度环比例 */
-#define SPEED_PID_KI        0.1f    /* 速度环积分 */
+#define SPEED_PID_KP        5.0f    /* 速度环比例（调参后） */
+#define SPEED_PID_KI        0.05f   /* 速度环积分（调参后） */
 #define SPEED_PID_KD        0.0f    /* 速度环微分 */
 
 #define RAMP_SLOPE          20.0f   /* 每周期目标转速最大变化量 rpm */
 #define SPEED_FILTER_ALPHA  0.3f    /* 测速一阶低通系数 */
 
-/* 堵转检测：目标转速较高但实际转速接近 0 持续一段时间判为异常 */
+/* 堵转检测 */
 #define STALL_TARGET_THRESH 100     /* rpm */
 #define STALL_SPEED_THRESH  20      /* rpm */
-#define STALL_TIMEOUT_CNT   100     /* 周期数（5ms/周期 -> 500ms） */
+#define STALL_TIMEOUT_CNT   100     /* 周期数 */
+
+/* 开环电机测试开关：1=测试模式（正转/停/反转循环），0=正常速度环 */
+#define MOTOR_OPENLOOP_TEST   0
 
 static pid_type_def          speed_pid;
 static ramp_function_source_t motor_ramp;
@@ -48,21 +51,44 @@ void chassis_init(void)
  */
 void chassis_task(void)
 {
+#if MOTOR_OPENLOOP_TEST
+    /* ============ 开环电机测试 ============
+     * 循环：正转 2s → 停 2s → 反转 2s → 停 2s
+     * 用于验证 TB6612 + 电机 + 7.4V 供电 + PWM 接线是否正确
+     * 测完把 MOTOR_OPENLOOP_TEST 改成 0 即可恢复速度环
+     */
+    static uint32_t last_led_tick = 0;
+    uint32_t now = HAL_GetTick();
+
+    /* 心跳灯 */
+    if (now - last_led_tick >= 500)
+    {
+        last_led_tick = now;
+        bsp_led_toggle();
+    }
+
+    /* 电机一直正转（80% 占空比） */
+    bsp_motor_set_duty(800);
+#else
+    /* ---- 正常速度闭环（原有代码） ---- */
     int16_t actual;
     int16_t target;
     int16_t duty;
     fp32    filtered;
 
-    /* 1. 测速 + 低通滤波 */
+    /* CAN 错误恢复：总线关闭(bus-off)时自动复位，防止卡死 */
+    bsp_can_error_recover();
+
+    /*  测速+低通滤波 */
     actual   = bsp_motor_read_speed_rpm();
     filtered = first_order_filter_cali(&speed_filter, (fp32)actual);
     comm.motor_actual_speed = (int16_t)filtered;
 
-    /* 2. 目标转速经斜坡平滑，避免阶跃 */
+    /*  目标转速经斜坡平滑，避免阶跃 */
     ramp_calc(&motor_ramp, (fp32)comm.motor_target_speed);
     target = (int16_t)motor_ramp.out;
 
-    /* 3. 电机堵转/异常检测 */
+    /*  电机堵转检测 */
     if (abs(target) > STALL_TARGET_THRESH && abs((int16_t)filtered) < STALL_SPEED_THRESH)
     {
         if (++stall_count > STALL_TIMEOUT_CNT)
@@ -74,7 +100,7 @@ void chassis_task(void)
         comm.motor_online = 1;
     }
 
-    /* 4. 速度环闭环 */
+    /*  速度环闭环 */
     if (board_comm_is_online() && comm.motor_online)
     {
         duty = (int16_t)pid_calc(&speed_pid, filtered, (fp32)target);
@@ -82,17 +108,18 @@ void chassis_task(void)
     }
     else
     {
-        /* 板间离线或电机异常 -> 停机并复位 PID */
+        /* 板间离线或电机异常，停机并复位 PID */
         bsp_motor_set_duty(0);
         pid_reset(&speed_pid);
     }
 
-    /* 5. 回传状态帧（兼作心跳） */
+    /*  回传状态帧 */
     chassis_send_status((int16_t)filtered, comm.motor_online);
 
-    /* 6. 电机异常 -> 呼吸灯 */
+    /*  电机异常呼吸灯 */
     if (comm.motor_online)
         bsp_led_off();
     else
         bsp_led_breathing_tick();
+#endif
 }
