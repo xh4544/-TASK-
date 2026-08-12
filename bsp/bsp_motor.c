@@ -1,14 +1,6 @@
 #include "bsp_motor.h"
 #include "tim.h"
 #include "main.h"
-
-/*
- * MG310 减速电机（霍尔编码器，AB 相正交）
- *   - 磁环 13 线/转（电机轴）
- *   - 减速比 1:20 -> 输出轴 13 * 20 = 260 线/转
- *   - TIM1 编码器模式四倍频 -> 1040 计数/转（输出轴）
- *   若实测转速有偏差，只需修改这两个宏。
- */
 #define ENCODER_PPR_MOTOR        13
 #define GEAR_RATIO               20
 #define ENCODER_COUNTS_PER_REV   (ENCODER_PPR_MOTOR * GEAR_RATIO * 4)
@@ -21,7 +13,7 @@ static uint32_t last_tick = 0;
 static int16_t  last_rpm  = 0;
 
 /**
- * @brief 初始化 TB6612（使能、停转）并启动编码器/PWM
+ * @brief 初始化 TB6612（使能、停转）并启动编码器PWM
  */
 void bsp_motor_init(void)
 {
@@ -31,16 +23,16 @@ void bsp_motor_init(void)
     HAL_GPIO_WritePin(TB6612_AIN1_GPIO_Port, TB6612_AIN1_Pin, GPIO_PIN_RESET);
     HAL_GPIO_WritePin(TB6612_AIN2_GPIO_Port, TB6612_AIN2_Pin, GPIO_PIN_RESET);
 
-    /* 启动编码器接口与电机 PWM */
+    /* 启动编码器接口与电机 PWM（TIM3_CH3 = PB0） */
     HAL_TIM_Encoder_Start(&htim1, TIM_CHANNEL_ALL);
-    HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_1);
+    HAL_TIM_PWM_Start(&htim3, TIM_CHANNEL_3);
 
     last_cnt  = (uint16_t)__HAL_TIM_GET_COUNTER(&htim1);
     last_tick = HAL_GetTick();
 }
 
 /**
- * @brief 设置电机驱动：duty 符号决定方向，绝对值决定 PWM 占空比
+ * @brief 设置电机驱动
  * @param duty -1000~+1000
  */
 void bsp_motor_set_duty(int16_t duty)
@@ -73,12 +65,12 @@ void bsp_motor_set_duty(int16_t duty)
         HAL_GPIO_WritePin(TB6612_AIN2_GPIO_Port, TB6612_AIN2_Pin, GPIO_PIN_RESET);
     }
 
-    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_1, pwm);
+    __HAL_TIM_SET_COMPARE(&htim3, TIM_CHANNEL_3, pwm);
 }
 
 /**
- * @brief 读取编码器并计算实际转速（需周期性调用）
- * @return 实际转速 rpm（带符号）
+ * @brief 读取编码器并计算实际转速
+ * @return 实际转速 rpm
  */
 int16_t bsp_motor_read_speed_rpm(void)
 {
