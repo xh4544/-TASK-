@@ -2,6 +2,9 @@
 #include "bsp_oled.h"
 #include "protocol.h"
 #include "can_receive.h"
+#include "bsp_can.h"
+#include "tim.h"
+#include "can.h"
 
 /*
  * OLED 显示布局（6x8 字库，8 页，21 列）
@@ -38,6 +41,19 @@ void oled_app_task(void)
     /* 板间通信状态 */
     bsp_oled_show_str(0, 3, "Comm:");
     bsp_oled_show_str(30, 3, board_on ? "OK" : "LOST");
+
+    /* 调试：CAN 收发计数（发送成功/失败、接收计数、bus-off 次数） */
+    bsp_oled_show_str(0, 4, "TX:");
+    bsp_oled_show_num(24, 4, (int32_t)can_tx_ok, 6);
+    bsp_oled_show_num(66, 4, (int32_t)can_tx_fail, 5);
+    bsp_oled_show_str(0, 5, "RX:");
+    bsp_oled_show_num(24, 5, (int32_t)can_rx_count, 6);
+    bsp_oled_show_str(0, 6, "BOFF:");
+    bsp_oled_show_num(30, 6, (int32_t)can_bus_off_count, 4);
+    /* 调试：FIFO0 / FIFO1 待处理帧数，看帧进哪个 FIFO */
+    bsp_oled_show_str(0, 7, "F:");
+    bsp_oled_show_num(18, 7, (int32_t)(hcan.Instance->RF0R & CAN_RF0R_FMP0), 1);
+    bsp_oled_show_num(36, 7, (int32_t)(hcan.Instance->RF1R & CAN_RF1R_FMP1), 1);
 
     bsp_oled_flush();
 }
